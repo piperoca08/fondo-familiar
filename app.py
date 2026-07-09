@@ -19,7 +19,7 @@ if 'usuario_actual' not in st.session_state:
     st.session_state['usuario_actual'] = None
 
 # ==============================================================================
-# 2. CAPA DE AUTENTICACIÓN (CON VERIFICACIÓN DE BLOQUEO)
+# 2. CAPA DE AUTENTICACIÓN
 # ==============================================================================
 def pantalla_autenticacion():
     st.title("🔐 Acceso al Sistema - Fondo Familiar")
@@ -35,7 +35,6 @@ def pantalla_autenticacion():
             if len(respuesta.data) > 0:
                 usuario_db = respuesta.data[0]
                 if usuario_db['contrasena_cifrada'] == contrasena:
-                    # REGLA DE NEGOCIO: Verificar si el usuario está bloqueado
                     if usuario_db.get('activo', True) == True:
                         st.session_state['usuario_actual'] = usuario_db
                         st.success(f"Ingreso autorizado para {usuario_db['nombre']}.")
@@ -61,12 +60,10 @@ def pantalla_principal():
         
     st.title("📊 Sistema Integral de Gestión Financiera")
     
-    # Banderas de Seguridad por Rol
     es_admin = usuario['rol'] == "Administrador"
     es_revisor = usuario['rol'] in ["Administrador", "Revisor", "Tesorero"]
     es_tesorero_admin = usuario['rol'] in ["Administrador", "Tesorero"]
     
-    # Generador Dinámico de Pestañas
     nombres_pestanas = ["Resumen", "💸 Pagar", "📜 Historial", "🤝 Préstamos", "📅 Cierre Anual"]
     if es_revisor:
         nombres_pestanas.append("✅ Revisión Pagos")
@@ -105,9 +102,9 @@ def pantalla_principal():
                 col3.metric("Saldo Pendiente Anual", f"${saldo_restante:,.0f}")
                 
                 if aportes_pendientes > 0:
-                    st.info(f"⏳ Registras **${aportes_pendientes:,.0f}** en estado 'Pendiente' de aprobación.")
+                    st.info(f"⏳ Registras **${aportes_pendientes:,.0f}** en estado 'Pendiente'.")
             else:
-                st.warning("No tiene cupos asignados para este ciclo. Contacte al Administrador o Tesorero.")
+                st.warning("No tiene cupos asignados para este ciclo. Contacte al Administrador.")
         else:
             st.error("El año fiscal 2026 no ha sido configurado.")
 
@@ -155,10 +152,6 @@ def pantalla_principal():
             tasa_p = st.number_input("Tasa Interés Mensual (%)", min_value=0.0, max_value=10.0, value=2.0, step=0.5, key="prestamo_tasa")
             fecha_lim = st.date_input("Fecha de Vencimiento", key="prestamo_fecha")
             
-            if monto_p > 0:
-                interes_estimado = monto_p * (tasa_p / 100)
-                st.warning(f"📊 Interés Mensual: ${interes_estimado:,.0f} | Retorno Total: ${(monto_p + interes_estimado):,.0f}")
-                
             if st.button("Radicar Solicitud", key="btn_radicar_prestamo"):
                 if monto_p > 0:
                     data_prestamo = {"id_usuario": usuario['id'], "monto_solicitado": monto_p, "tasa_interes": tasa_p, "estado": "Solicitado", "fecha_limite": str(fecha_lim)}
@@ -192,8 +185,6 @@ def pantalla_principal():
                             if cB.button("❌ Denegar", key=f"re_p_{p['id']}"):
                                 supabase.table("prestamos").update({"estado": "Pagado"}).eq("id", p['id']).execute()
                                 st.rerun()
-                else:
-                    st.success("No existen créditos en cola.")
 
     # --- PESTAÑA 4: CIERRE ANUAL ---
     with tabs[4]:
@@ -218,10 +209,6 @@ def pantalla_principal():
                 colX, colY = st.columns(2)
                 colX.metric("Valor Neto por Cupo", f"${valor_final_cupo:,.0f}")
                 colY.metric("Tu Retorno Proyectado", f"${mi_liquidacion:,.0f}")
-            else:
-                st.warning("No hay cupos asignados en el sistema.")
-        else:
-            st.error("Configuración de ciclo no encontrada.")
 
     # ==========================================================================
     # PESTAÑAS ADMINISTRATIVAS CONDICIONALES
@@ -244,11 +231,9 @@ def pantalla_principal():
                         if colB.button("❌ Rechazar", key=f"re_{tx['id']}"):
                             supabase.table("transacciones").update({"estado": "Rechazado", "id_revisor": usuario['id']}).eq("id", tx['id']).execute()
                             st.rerun()
-            else:
-                st.success("No se registran transacciones pendientes.")
         idx_p += 1
 
-    # --- PANEL GESTIÓN USUARIOS (CON BLOQUEO DE CUENTAS) ---
+    # --- PANEL GESTIÓN USUARIOS (CON BLOQUEO Y CORREO VISIBLE) ---
     if es_admin:
         with tabs[idx_p]:
             st.subheader("👤 Registro Central de Miembros")
@@ -264,28 +249,24 @@ def pantalla_principal():
                     if u_nombre and u_correo and u_pass:
                         try:
                             supabase.table("usuarios").insert({"nombre": u_nombre, "correo": u_correo, "contrasena_cifrada": u_pass, "rol": u_rol}).execute()
-                            st.success(f"🎉 '{u_nombre}' registrado con rol '{u_rol}'.")
+                            st.success(f"🎉 '{u_nombre}' registrado.")
                             st.rerun()
                         except Exception as error_u:
                             st.error(f"Error: {error_u}")
-                    else:
-                        st.error("Campos obligatorios.")
             
             with col_u2:
                 st.markdown("### Directorio Actual")
-                # Incluimos la columna 'activo' para ver quién está bloqueado
                 lista_usuarios = supabase.table("usuarios").select("id, nombre, correo, rol, activo").order("id", desc=False).execute()
                 if len(lista_usuarios.data) > 0:
                     st.dataframe(lista_usuarios.data, use_container_width=True)
 
             st.markdown("---")
             st.markdown("### 🔒 Suspender / Activar Acceso de Usuarios")
-            st.write("Bloquea a un usuario para impedir su inicio de sesión sin perder su historial.")
             
             lista_us_bloqueo = supabase.table("usuarios").select("id, nombre, correo, activo").order("id", desc=False).execute()
             if len(lista_us_bloqueo.data) > 0:
-                # Diccionario que muestra el estado visualmente
-                dicc_estado = {f"{u['nombre']} - {'🟢 Activo' if u.get('activo', True) else '🔴 Bloqueado'}": u for u in lista_us_bloqueo.data}
+                # AQUÍ ESTÁ EL CAMBIO: Ahora el diccionario muestra Nombre | Correo
+                dicc_estado = {f"{u['nombre']} | {u['correo']} - {'🟢 Activo' if u.get('activo', True) else '🔴 Bloqueado'}": u for u in lista_us_bloqueo.data}
                 
                 col_b1, col_b2 = st.columns([1, 1])
                 with col_b1:
@@ -299,9 +280,8 @@ def pantalla_principal():
                     
                     if estado_actual:
                         if st.button("🔴 Bloquear Acceso", key="btn_bloquear"):
-                            # Si es el admin tratando de bloquearse a sí mismo, se lo impedimos por seguridad
                             if user_target['id'] == usuario['id']:
-                                st.error("No puedes bloquear tu propia cuenta de Administrador.")
+                                st.error("No puedes bloquear tu propia cuenta.")
                             else:
                                 supabase.table("usuarios").update({"activo": False}).eq("id", user_target['id']).execute()
                                 st.rerun()
@@ -309,19 +289,20 @@ def pantalla_principal():
                         if st.button("🟢 Desbloquear Acceso", key="btn_desbloquear"):
                             supabase.table("usuarios").update({"activo": True}).eq("id", user_target['id']).execute()
                             st.rerun()
-                            
         idx_p += 1
 
-    # --- PANEL ASIGNACIÓN DE CUPOS ---
+    # --- PANEL ASIGNACIÓN DE CUPOS (CON CORREO VISIBLE) ---
     if es_tesorero_admin:
         with tabs[idx_p]:
             st.subheader("⚙️ Configuración de Cupos por Vigencia")
             
-            lista_us = supabase.table("usuarios").select("id, nombre, rol").execute()
+            # AQUÍ ESTÁ EL CAMBIO: Seleccionamos el correo de la base de datos
+            lista_us = supabase.table("usuarios").select("id, nombre, correo").execute()
             lista_ci = supabase.table("configuracion_ciclo").select("id, anio").execute()
             
             if len(lista_us.data) > 0 and len(lista_ci.data) > 0:
-                dicc_usuarios = {f"{u['nombre']} ({u['rol']})": u['id'] for u in lista_us.data}
+                # AQUÍ ESTÁ EL CAMBIO: Mostramos Nombre | Correo en el menú desplegable
+                dicc_usuarios = {f"{u['nombre']} | {u['correo']}": u['id'] for u in lista_us.data}
                 dicc_ciclos = {str(c['anio']): c['id'] for c in lista_ci.data}
                 
                 col_c1, col_c2 = st.columns([1, 1.5])
@@ -355,8 +336,6 @@ def pantalla_principal():
                         st.dataframe(datos_tabla, use_container_width=True)
                     else:
                         st.info("Aún no hay cupos asignados.")
-            else:
-                st.warning("Debe existir al menos un usuario y un ciclo configurado.")
 
 # ==============================================================================
 # 4. ENRUTADOR DE ACCESO

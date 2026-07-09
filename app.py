@@ -186,30 +186,114 @@ def pantalla_principal():
                                 supabase.table("prestamos").update({"estado": "Pagado"}).eq("id", p['id']).execute()
                                 st.rerun()
 
-    # --- PESTAÑA 4: CIERRE ANUAL ---
+    # --- PESTAÑA 4: CIERRE ANUAL (VISIÓN GERENCIAL Y PERSONAL) ---
     with tabs[4]:
         st.subheader("Cierre Contable y Distribución de Dividendos")
+        
+        # Leemos el ciclo actual (2026)
         resp_ciclo = supabase.table("configuracion_ciclo").select("id").eq("anio", 2026).execute()
         
         if len(resp_ciclo.data) > 0:
             id_ciclo_actual = resp_ciclo.data[0]['id']
-            todas_tx = supabase.table("transacciones").select("monto").eq("estado", "Aprobado").execute()
-            fondo_total = sum(tx["monto"] for tx in todas_tx.data)
+            
+            # 1. MATEMÁTICA BASE: GANANCIAS GLOBALES (Rendimientos a repartir)
+            tx_rendimientos = supabase.table("transacciones").select("monto").in_("tipo", ["Interes_Prestamo", "Actividad_Externa"]).eq("estado", "Aprobado").execute()
+            rendimientos_totales = sum(tx["monto"] for tx in tx_rendimientos.data)
             
             todos_cupos = supabase.table("cupos_miembros").select("cantidad_cupos").eq("id_ciclo", id_ciclo_actual).execute()
             total_cupos_vendidos = sum(c["cantidad_cupos"] for c in todos_cupos.data)
             
-            if total_cupos_vendidos > 0:
-                valor_final_cupo = fondo_total / total_cupos_vendidos
-                respuesta_mis_cupos = supabase.table("cupos_miembros").select("cantidad_cupos").eq("id_usuario", usuario['id']).eq("id_ciclo", id_ciclo_actual).execute()
-                mis_cupos_liq = respuesta_mis_cupos.data[0]["cantidad_cupos"] if len(respuesta_mis_cupos.data) > 0 else 0
-                mi_liquidacion = mis_cupos_liq * valor_final_cupo
-                
-                st.success(f"💰 Balance Consolidado Líquido: **${fondo_total:,.0f} COP**")
-                colX, colY = st.columns(2)
-                colX.metric("Valor Neto por Cupo", f"${valor_final_cupo:,.0f}")
-                colY.metric("Tu Retorno Proyectado", f"${mi_liquidacion:,.0f}")
+            rendimiento_por_cupo = (rendimientos_totales / total_cupos_vendidos) if total_cupos_vendidos > 0 else 0
 
+            # ==================================================================
+            # VISIÓN GERENCIAL (Exclusivo para Administrador y Tesorero)
+            # ==================================================================
+            if es_tesorero_admin:
+                st.markdown("### 🌐 Panel de Control Global (Consolidado Familiar)")
+                
+                # Aportes totales puros de todo el fondo
+                tx_aportes_global = supabase.table("transacciones").select("monto").eq("tipo", "Aporte").eq("estado", "Aprobado").execute()
+                aportes_totales = sum(tx["monto"] for tx in tx_aportes_global.data)
+                
+                # Tarjetas de métricas globales
+                colG1, colG2, colG3, colG4 = st.columns(4)
+                colG1.metric("Caja Aportes Reales", f"${aportes_totales:,.0f}")
+                colG2.metric("Utilidades (Rendimientos)", f"${rendimientos_totales:,.0f}")
+                colG3.metric("Gran Total Consolidado", f"${(aportes_totales + rendimientos_totales):,.0f}")
+                colG4.metric("Cupos Vendidos", f"{total_cupos_vendidos}")
+                
+                st.markdown("#### 👥 Libro Mayor de Liquidación por Ahorrador")
+                
+                # Extraemos y cruzamos los datos de todos los usuarios
+                all_users = supabase.table("usuarios").select("id, nombre").eq("activo", True).execute()
+                all_aportes = supabase.table("transacciones").select("id_usuario, monto").eq("tipo", "Aporte").eq("estado", "Aprobado").execute()
+                all_cupos = supabase.table("cupos_miembros").select("id_usuario, cantidad_cupos").eq("id_ciclo", id_ciclo_actual).execute()
+                
+                detalle_ahorradores = []
+                for u in all_users.data:
+                    u_id = u['id']
+                    # Sumamos los aportes y cupos individuales de forma dinámica
+                    u_aportes = sum(tx['monto'] for tx in all_aportes.data if tx['id_usuario'] == u_id)
+                    u_cupos = sum(c['cantidad_cupos'] for c in all_cupos.data if c['id_usuario'] == u_id)
+                    
+                    # Solo mostramos al usuario si tiene dinero o cupos activos
+                    if u_cupos > 0 or u_aportes > 0:
+                        u_ganancias = u_cupos * rendimiento_por_cupo
+                        u_liquidacion = u_aportes + u_ganancias
+                        detalle_ahorradores.append({
+                            "Ahorrador": u['nombre'],
+                            "Cupos": u_cupos,
+                            "Ahorro Real": u_aportes,
+                            "Utilidades": u_ganancias,
+                            "Liquidación Total": u_liquidacion
+                        })
+                
+                if len(detalle_ahorradores) > 0:
+                    # Dibujamos la tabla con formato de moneda
+                    st.dataframe(
+                        detalle_ahorradores, 
+                        use_container_width=True,
+                        column_config={
+                            "Ahorro Real": st.column_config.NumberColumn(format="$%d COP"),
+                            "Utilidades": st.column_config.NumberColumn(format="$%d COP"),
+                            "Liquidación Total": st.column_config.NumberColumn(format="$%d COP")
+                        }
+                    )
+                else:
+                    st.info("Aún no hay registros financieros para este ciclo.")
+                    
+                st.markdown("---")
+                st.markdown("### 👤 Mi Cierre Personal")
+
+            # ==================================================================
+            # VISIÓN CLIENTE (Lo que ve cada Ahorrador para su propia cuenta)
+            # ==================================================================
+            mis_tx = supabase.table("transacciones").select("monto").eq("id_usuario", usuario['id']).eq("tipo", "Aporte").eq("estado", "Aprobado").execute()
+            mi_ahorro_real = sum(tx["monto"] for tx in mis_tx.data)
+            
+            respuesta_mis_cupos = supabase.table("cupos_miembros").select("cantidad_cupos").eq("id_usuario", usuario['id']).eq("id_ciclo", id_ciclo_actual).execute()
+            mis_cupos_liq = respuesta_mis_cupos.data[0]["cantidad_cupos"] if len(respuesta_mis_cupos.data) > 0 else 0
+            
+            mis_ganancias = mis_cupos_liq * rendimiento_por_cupo
+            mi_liquidacion_total = mi_ahorro_real + mis_ganancias
+            
+            st.success(f"💰 Tu Liquidación Proyectada: **${mi_liquidacion_total:,.0f} COP**")
+            
+            colX, colY, colZ = st.columns(3)
+            colX.metric("Tu Ahorro Real (Aportes)", f"${mi_ahorro_real:,.0f}")
+            colY.metric("Tus Ganancias (Intereses/Rifas)", f"${mis_ganancias:,.0f}")
+            colZ.metric("Rendimiento por 1 Cupo", f"${rendimiento_por_cupo:,.0f}")
+            
+            # El desglose global solo se lo mostramos al ahorrador común, 
+            # ya que el Administrador/Tesorero ya tiene el gran panel gerencial arriba.
+            if not es_tesorero_admin:
+                with st.expander("📊 Ver desglose global del fondo (Auditoría)"):
+                    st.write(f"**Utilidades totales del fondo a repartir:** ${rendimientos_totales:,.0f}")
+                    st.write(f"**Total de cupos suscritos en la familia:** {total_cupos_vendidos}")
+                    st.markdown("*Nota de negocio: El capital base no se prorratea. Recibes exactamente lo aportado de tu bolsillo, sumando las utilidades proporcionales a los cupos que contrataste.*")
+        else:
+            st.error("Configuración de ciclo no encontrada.")
+            
     # ==========================================================================
     # PESTAÑAS ADMINISTRATIVAS CONDICIONALES
     # ==========================================================================

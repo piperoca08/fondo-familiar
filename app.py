@@ -233,7 +233,7 @@ def pantalla_principal():
                             st.rerun()
         idx_p += 1
 
-    # --- PANEL GESTIÓN USUARIOS (CON BLOQUEO Y CORREO VISIBLE) ---
+    # --- PANEL GESTIÓN USUARIOS ---
     if es_admin:
         with tabs[idx_p]:
             st.subheader("👤 Registro Central de Miembros")
@@ -290,12 +290,11 @@ def pantalla_principal():
                             st.rerun()
         idx_p += 1
 
-    # --- PANEL ASIGNACIÓN DE CUPOS (FILTRANDO USUARIOS ACTIVOS) ---
+    # --- PANEL ASIGNACIÓN DE CUPOS ---
     if es_tesorero_admin:
         with tabs[idx_p]:
             st.subheader("⚙️ Configuración de Cupos por Vigencia")
             
-            # AQUÍ ESTÁ EL CAMBIO: Filtramos por .eq("activo", True)
             lista_us = supabase.table("usuarios").select("id, nombre, correo").eq("activo", True).execute()
             lista_ci = supabase.table("configuracion_ciclo").select("id, anio").execute()
             
@@ -328,10 +327,24 @@ def pantalla_principal():
                 
                 with col_c2:
                     st.markdown("### Directorio Actual")
-                    cupos_actuales = supabase.table("cupos_miembros").select("cantidad_cupos, usuarios(nombre), configuracion_ciclo(anio)").execute()
+                    # CAMBIO APLICADO AQUÍ: Traemos el campo activo del usuario
+                    cupos_actuales = supabase.table("cupos_miembros").select("cantidad_cupos, usuarios(nombre, activo), configuracion_ciclo(anio)").execute()
+                    
                     if len(cupos_actuales.data) > 0:
-                        datos_tabla = [{"Usuario": c['usuarios']['nombre'], "Año Vigencia": c['configuracion_ciclo']['anio'], "Cupos": c['cantidad_cupos']} for c in cupos_actuales.data]
-                        st.dataframe(datos_tabla, use_container_width=True)
+                        datos_tabla = []
+                        # Filtramos por Python: Solo mostramos los usuarios que siguen activos
+                        for c in cupos_actuales.data:
+                            if c['usuarios'] is not None and c['usuarios'].get('activo', True):
+                                datos_tabla.append({
+                                    "Usuario": c['usuarios']['nombre'], 
+                                    "Año Vigencia": c['configuracion_ciclo']['anio'], 
+                                    "Cupos": c['cantidad_cupos']
+                                })
+                        
+                        if len(datos_tabla) > 0:
+                            st.dataframe(datos_tabla, use_container_width=True)
+                        else:
+                            st.info("No hay cupos asignados a usuarios activos en este momento.")
                     else:
                         st.info("Aún no hay cupos asignados.")
 

@@ -57,14 +57,18 @@ def pantalla_principal():
         
     st.title("📊 Sistema Integral de Gestión Financiera")
     
+    # Banderas de Seguridad
     es_admin = usuario['rol'] == "Administrador"
     es_revisor = usuario['rol'] in ["Administrador", "Revisor", "Tesorero"]
+    es_tesorero_admin = usuario['rol'] in ["Administrador", "Tesorero"] # Nueva bandera
     
     nombres_pestanas = ["Resumen", "💸 Pagar", "📜 Historial", "🤝 Préstamos", "📅 Cierre Anual"]
     if es_revisor:
         nombres_pestanas.append("✅ Revisión Pagos")
     if es_admin:
         nombres_pestanas.append("👤 Gestión Usuarios")
+    if es_tesorero_admin:
+        nombres_pestanas.append("⚙️ Asignar Cupos") # Nueva Pestaña
         
     tabs = st.tabs(nombres_pestanas)
     
@@ -100,12 +104,12 @@ def pantalla_principal():
                 if aportes_pendientes > 0:
                     st.info(f"⏳ Registras **${aportes_pendientes:,.0f}** en estado 'Pendiente' de aprobación.")
             else:
-                st.warning("No tiene cupos asignados para este ciclo.")
+                st.warning("No tiene cupos asignados para este ciclo. Contacte al Administrador o Tesorero.")
         else:
             st.error("El año fiscal 2026 no ha sido configurado.")
 
     # --------------------------------------------------------------------------
-    # PESTAÑA 1: REGISTRO TRANSACCIONAL (WRITE AND UPLOAD)
+    # PESTAÑA 1: REGISTRO TRANSACCIONAL
     # --------------------------------------------------------------------------
     with tabs[1]:
         st.subheader("Subir comprobante de pago")
@@ -123,12 +127,12 @@ def pantalla_principal():
                     url_publica = supabase.storage.from_("comprobantes").get_public_url(nombre_archivo_unico)
                     nuevo_pago = {"id_usuario": usuario['id'], "mes_correspondiente": meses[nombre_mes], "tipo": tipo, "monto": monto, "estado": "Pendiente", "url_comprobante": url_publica}
                     supabase.table("transacciones").insert(nuevo_pago).execute()
-                    st.success("✅ Transacción grabada y archivo alojado en la bóveda correctamente.")
+                    st.success("✅ Transacción grabada y archivo alojado.")
                     st.balloons()
                 except Exception as e:
                     st.error(f"Fallo crítico en la carga: {e}")
             else:
-                st.warning("⚠️ Formulario incompleto. Diligencie el monto y cargue el soporte físico.")
+                st.warning("⚠️ Formulario incompleto.")
 
     # --------------------------------------------------------------------------
     # PESTAÑA 2: VISUALIZACIÓN INDIVIDUAL DEL LEDGER
@@ -139,61 +143,205 @@ def pantalla_principal():
         if len(respuesta_ledger.data) > 0:
             st.dataframe(respuesta_ledger.data, use_container_width=True, column_config={"id": None, "id_usuario": None, "id_revisor": None, "url_comprobante": None})
         else:
-            st.info("No registra movimientos históricos en el Libro Mayor.")
+            st.info("No registra movimientos históricos.")
 
     # --------------------------------------------------------------------------
     # PESTAÑA 3: MODULO COMPLETO DE CRÉDITOS Y PRÉSTAMOS
     # --------------------------------------------------------------------------
     with tabs[3]:
-        st.subheader("🤝 Módulo de Colocación de Créditos Familiares")
+        st.subheader("🤝 Módulo de Colocación de Créditos")
         col_sol, col_vis = st.columns([1, 2])
         
         with col_sol:
-            st.markdown("### Crear Solicitud de Préstamo")
+            st.markdown("### Crear Solicitud")
             monto_p = st.number_input("Capital Solicitado (COP)", min_value=0, step=50000, key="monto_p")
-            tasa_p = st.number_input("Tasa Interés Mensual Nominal (%)", min_value=0.0, max_value=10.0, value=2.0, step=0.5)
-            fecha_lim = st.date_input("Fecha de Vencimiento de Obligación")
+            tasa_p = st.number_input("Tasa Interés Mensual (%)", min_value=0.0, max_value=10.0, value=2.0, step=0.5)
+            fecha_lim = st.date_input("Fecha de Vencimiento")
             
             if monto_p > 0:
                 interes_estimado = monto_p * (tasa_p / 100)
-                st.warning(f"📊 **Simulación Contable:** Interés Mensual: ${interes_estimado:,.0f} | Retorno Total: ${(monto_p + interes_estimado):,.0f}")
+                st.warning(f"📊 Interés Mensual: ${interes_estimado:,.0f} | Retorno Total: ${(monto_p + interes_estimado):,.0f}")
                 
-            if st.button("Radicar Solicitud de Crédito"):
+            if st.button("Radicar Solicitud"):
                 if monto_p > 0:
                     data_prestamo = {"id_usuario": usuario['id'], "monto_solicitado": monto_p, "tasa_interes": tasa_p, "estado": "Solicitado", "fecha_limite": str(fecha_lim)}
                     supabase.table("prestamos").insert(data_prestamo).execute()
-                    st.success("✅ Crédito radicado. Pendiente de evaluación por el comité.")
+                    st.success("✅ Crédito radicado.")
                     st.rerun()
                 else:
-                    st.error("Monto de capital inválido.")
+                    st.error("Monto inválido.")
                     
         with col_vis:
-            st.markdown("### Estado de tus Obligaciones Crediticias")
+            st.markdown("### Tus Obligaciones")
             mis_p = supabase.table("prestamos").select("*").eq("id_usuario", usuario['id']).order("id", desc=True).execute()
             if len(mis_p.data) > 0:
                 st.dataframe(mis_p.data, use_container_width=True, column_config={"id_usuario": None})
             else:
-                st.info("No registra pasivos vigentes ni solicitudes en curso.")
+                st.info("No registra pasivos vigentes.")
                 
             if es_revisor:
                 st.write("---")
-                st.markdown("### 🔑 Panel Evaluador de Créditos (Rol Revisor)")
+                st.markdown("### 🔑 Panel Evaluador (Rol Revisor)")
                 p_pendientes = supabase.table("prestamos").select("*, usuarios(nombre)").eq("estado", "Solicitado").execute()
-                
                 if len(p_pendientes.data) > 0:
                     for p in p_pendientes.data:
-                        nombre_solicitante = p['usuarios']['nombre'] if 'usuarios' in p else "Miembro Fondo"
+                        nombre_solicitante = p['usuarios']['nombre'] if 'usuarios' in p else "Miembro"
                         with st.expander(f"Crédito ID {p['id']} - {nombre_solicitante} (${p['monto_solicitado']:,.0f})"):
-                            st.write(f"Vencimiento: {p['fecha_limite']} | Tasa mensual pactada: {p['tasa_interes']}%")
+                            st.write(f"Vencimiento: {p['fecha_limite']} | Tasa: {p['tasa_interes']}%")
                             cA, cB = st.columns(2)
-                            if cA.button("✅ Conceder y Activar", key=f"ap_p_{p['id']}"):
+                            if cA.button("✅ Conceder", key=f"ap_p_{p['id']}"):
                                 supabase.table("prestamos").update({"estado": "Activo"}).eq("id", p['id']).execute()
                                 st.rerun()
-                            if cB.button("❌ Denegar Crédito", key=f"re_p_{p['id']}"):
+                            if cB.button("❌ Denegar", key=f"re_p_{p['id']}"):
                                 supabase.table("prestamos").update({"estado": "Pagado"}).eq("id", p['id']).execute()
                                 st.rerun()
                 else:
-                    st.success("No existen créditos en cola de evaluación.")
+                    st.success("No existen créditos en cola.")
+
+    # --------------------------------------------------------------------------
+    # PESTAÑA 4: PROYECCIÓN DINÁMICA DE LIQUIDACIÓN ANUAL
+    # --------------------------------------------------------------------------
+    with tabs[4]:
+        st.subheader("Cierre Contable y Distribución de Dividendos")
+        
+        # Leemos el ciclo actual (2026)
+        resp_ciclo = supabase.table("configuracion_ciclo").select("id").eq("anio", 2026).execute()
+        
+        if len(resp_ciclo.data) > 0:
+            id_ciclo_actual = resp_ciclo.data[0]['id']
+            todas_tx = supabase.table("transacciones").select("monto").eq("estado", "Aprobado").execute()
+            fondo_total = sum(tx["monto"] for tx in todas_tx.data)
+            
+            todos_cupos = supabase.table("cupos_miembros").select("cantidad_cupos").eq("id_ciclo", id_ciclo_actual).execute()
+            total_cupos_vendidos = sum(c["cantidad_cupos"] for c in todos_cupos.data)
+            
+            if total_cupos_vendidos > 0:
+                valor_final_cupo = fondo_total / total_cupos_vendidos
+                respuesta_mis_cupos = supabase.table("cupos_miembros").select("cantidad_cupos").eq("id_usuario", usuario['id']).eq("id_ciclo", id_ciclo_actual).execute()
+                mis_cupos_liq = respuesta_mis_cupos.data[0]["cantidad_cupos"] if len(respuesta_mis_cupos.data) > 0 else 0
+                mi_liquidacion = mis_cupos_liq * valor_final_cupo
+                
+                st.success(f"💰 Balance Consolidado Líquido: **${fondo_total:,.0f} COP**")
+                colX, colY = st.columns(2)
+                colX.metric("Valor Neto por Cupo", f"${valor_final_cupo:,.0f}")
+                colY.metric("Tu Retorno Proyectado", f"${mi_liquidacion:,.0f}")
+            else:
+                st.warning("No hay cupos asignados en el sistema para realizar proyecciones.")
+        else:
+            st.error("Configuración de ciclo no encontrada.")
+
+    # --------------------------------------------------------------------------
+    # PESTAÑAS ADMINISTRATIVAS CONDICIONALES
+    # --------------------------------------------------------------------------
+    idx_p = 5
+    
+    # PANEL AUDITOR (REVISORES / TESOREROS)
+    if es_revisor:
+        with tabs[idx_p]:
+            st.subheader("Auditoría de Pagos Pendientes")
+            pagos_pendientes = supabase.table("transacciones").select("*").eq("estado", "Pendiente").execute()
+            if len(pagos_pendientes.data) > 0:
+                for tx in pagos_pendientes.data:
+                    with st.expander(f"Transacción ID {tx['id']} - Monto: ${tx['monto']} - Mes: {tx['mes_correspondiente']}"):
+                        st.markdown(f"**Soporte:** [Abrir Comprobante]({tx['url_comprobante']})")
+                        colA, colB = st.columns(2)
+                        if colA.button("✅ Aprobar", key=f"ap_{tx['id']}"):
+                            supabase.table("transacciones").update({"estado": "Aprobado", "id_revisor": usuario['id']}).eq("id", tx['id']).execute()
+                            st.rerun()
+                        if colB.button("❌ Rechazar", key=f"re_{tx['id']}"):
+                            supabase.table("transacciones").update({"estado": "Rechazado", "id_revisor": usuario['id']}).eq("id", tx['id']).execute()
+                            st.rerun()
+            else:
+                st.success("No se registran transacciones pendientes.")
+        idx_p += 1
+
+    # CONTROL DE MIEMBROS (ADMINISTRADOR)
+    if es_admin:
+        with tabs[idx_p]:
+            st.subheader("👤 Registro Central de Miembros")
+            col_u1, col_u2 = st.columns(2)
+            with col_u1:
+                u_nombre = st.text_input("Nombre Completo")
+                u_correo = st.text_input("Correo electrónico").strip().lower()
+                u_pass = st.text_input("Contraseña", type="password")
+                u_rol = st.selectbox("Asignación de Privilegios", ["Ahorrador", "Revisor", "Tesorero", "Administrador", "Invitado"])
+                if st.button("Ejecutar Alta de Usuario"):
+                    if u_nombre and u_correo and u_pass:
+                        try:
+                            supabase.table("usuarios").insert({"nombre": u_nombre, "correo": u_correo, "contrasena_cifrada": u_pass, "rol": u_rol}).execute()
+                            st.success(f"🎉 '{u_nombre}' registrado con rol '{u_rol}'.")
+                            st.rerun()
+                        except Exception as error_u:
+                            st.error(f"Error: {error_u}")
+                    else:
+                        st.error("Campos obligatorios.")
+            with col_u2:
+                lista_usuarios = supabase.table("usuarios").select("id, nombre, correo, rol").order("id", desc=False).execute()
+                if len(lista_usuarios.data) > 0:
+                    st.dataframe(lista_usuarios.data, use_container_width=True)
+        idx_p += 1
+
+    # NUEVA PESTAÑA: ASIGNACIÓN DE CUPOS POR VIGENCIA (ADMINISTRADOR Y TESORERO)
+    if es_tesorero_admin:
+        with tabs[idx_p]:
+            st.subheader("⚙️ Configuración de Cupos por Vigencia")
+            st.write("Asigna o modifica la cantidad de cupos comprometidos por cada miembro según el año fiscal.")
+            
+            # Consultar usuarios y ciclos disponibles
+            lista_us = supabase.table("usuarios").select("id, nombre, rol").execute()
+            lista_ci = supabase.table("configuracion_ciclo").select("id, anio").execute()
+            
+            if len(lista_us.data) > 0 and len(lista_ci.data) > 0:
+                dicc_usuarios = {f"{u['nombre']} ({u['rol']})": u['id'] for u in lista_us.data}
+                dicc_ciclos = {str(c['anio']): c['id'] for c in lista_ci.data}
+                
+                col_c1, col_c2 = st.columns([1, 1.5])
+                with col_c1:
+                    st.markdown("### Asignar Compromiso")
+                    sel_user_name = st.selectbox("Seleccionar Usuario", list(dicc_usuarios.keys()))
+                    sel_ciclo_name = st.selectbox("Vigencia (Año)", list(dicc_ciclos.keys()))
+                    cant_cupos = st.number_input("Cantidad de Cupos Mensuales", min_value=1, step=1)
+                    
+                    if st.button("Guardar Asignación de Cupos"):
+                        id_u = dicc_usuarios[sel_user_name]
+                        id_c = dicc_ciclos[sel_ciclo_name]
+                        
+                        # El sistema verifica si el usuario ya tiene un contrato para ese año
+                        existe = supabase.table("cupos_miembros").select("id").eq("id_usuario", id_u).eq("id_ciclo", id_c).execute()
+                        
+                        try:
+                            if len(existe.data) > 0:
+                                # Si ya existe, aplicamos un UPDATE
+                                id_registro = existe.data[0]['id']
+                                supabase.table("cupos_miembros").update({"cantidad_cupos": cant_cupos}).eq("id", id_registro).execute()
+                                st.success("Los cupos han sido actualizados correctamente.")
+                            else:
+                                # Si es nuevo, aplicamos un INSERT
+                                supabase.table("cupos_miembros").insert({"id_usuario": id_u, "id_ciclo": id_c, "cantidad_cupos": cant_cupos}).execute()
+                                st.success("Cupos asignados y contrato creado correctamente.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error en base de datos: {e}")
+                
+                with col_c2:
+                    st.markdown("### Directorio Actual de Cupos")
+                    # Traemos los datos cruzados para mostrarlos de forma legible
+                    cupos_actuales = supabase.table("cupos_miembros").select("cantidad_cupos, usuarios(nombre), configuracion_ciclo(anio)").execute()
+                    
+                    if len(cupos_actuales.data) > 0:
+                        # Extraemos los datos del formato JSON relacional a una lista plana
+                        datos_tabla = [
+                            {
+                                "Usuario": c['usuarios']['nombre'], 
+                                "Año Vigencia": c['configuracion_ciclo']['anio'], 
+                                "Cupos Contratados": c['cantidad_cupos']
+                            } for c in cupos_actuales.data
+                        ]
+                        st.dataframe(datos_tabla, use_container_width=True)
+                    else:
+                        st.info("Aún no hay cupos asignados en el sistema.")
+            else:
+                st.warning("Deben existir usuarios y al menos una vigencia (ej. 2026) para asignar cupos.")
 
     # --------------------------------------------------------------------------
     # PESTAÑA 4: PROYECCIÓN DINÁMICA DE LIQUIDACIÓN ANUAL

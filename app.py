@@ -70,7 +70,7 @@ def pantalla_principal():
     if es_admin:
         nombres_pestanas.append("👤 Gestión Usuarios")
     if es_tesorero_admin:
-        nombres_pestanas.append("⚙️ Asignar Cupos")
+        nombres_pestanas.append("⚙️ Parámetros Globales")
         
     tabs = st.tabs(nombres_pestanas)
     
@@ -141,22 +141,29 @@ def pantalla_principal():
         else:
             st.info("No registra movimientos históricos.")
 
-    # --- PESTAÑA 3: PRÉSTAMOS ---
+    # --- PESTAÑA 3: PRÉSTAMOS (TASA PARAMETRIZADA) ---
     with tabs[3]:
         st.subheader("🤝 Módulo de Colocación de Créditos")
+        
+        # Consultamos la tasa vigente configurada por el administrador
+        resp_ciclo_p = supabase.table("configuracion_ciclo").select("tasa_interes_prestamo").eq("anio", 2026).execute()
+        tasa_vigente = resp_ciclo_p.data[0].get("tasa_interes_prestamo", 3.0) if len(resp_ciclo_p.data) > 0 else 3.0
+
         col_sol, col_vis = st.columns([1, 2])
         
         with col_sol:
             st.markdown("### Crear Solicitud")
             monto_p = st.number_input("Capital Solicitado (COP)", min_value=0, step=50000, key="prestamo_monto")
-            tasa_p = st.number_input("Tasa Interés Mensual (%)", min_value=0.0, max_value=10.0, value=2.0, step=0.5, key="prestamo_tasa")
+            # Reemplazamos el input por un mensaje informativo estricto
+            st.info(f"ℹ️ **Tasa de interés vigente:** {tasa_vigente}% mensual (Fijada por la administración)")
             fecha_lim = st.date_input("Fecha de Vencimiento", key="prestamo_fecha")
             
             if st.button("Radicar Solicitud", key="btn_radicar_prestamo"):
                 if monto_p > 0:
-                    data_prestamo = {"id_usuario": usuario['id'], "monto_solicitado": monto_p, "tasa_interes": tasa_p, "estado": "Solicitado", "fecha_limite": str(fecha_lim)}
+                    # Insertamos la tasa_vigente que trajimos de la base de datos
+                    data_prestamo = {"id_usuario": usuario['id'], "monto_solicitado": monto_p, "tasa_interes": tasa_vigente, "estado": "Solicitado", "fecha_limite": str(fecha_lim)}
                     supabase.table("prestamos").insert(data_prestamo).execute()
-                    st.success("✅ Crédito radicado.")
+                    st.success("✅ Crédito radicado bajo las políticas vigentes.")
                     st.rerun()
                 else:
                     st.error("Monto inválido.")
@@ -177,7 +184,7 @@ def pantalla_principal():
                     for p in p_pendientes.data:
                         nombre_solicitante = p['usuarios']['nombre'] if 'usuarios' in p else "Miembro"
                         with st.expander(f"Crédito ID {p['id']} - {nombre_solicitante} (${p['monto_solicitado']:,.0f})"):
-                            st.write(f"Vencimiento: {p['fecha_limite']} | Tasa: {p['tasa_interes']}%")
+                            st.write(f"Vencimiento: {p['fecha_limite']} | Tasa aplicada: {p['tasa_interes']}%")
                             cA, cB = st.columns(2)
                             if cA.button("✅ Conceder", key=f"ap_p_{p['id']}"):
                                 supabase.table("prestamos").update({"estado": "Activo"}).eq("id", p['id']).execute()
@@ -186,7 +193,7 @@ def pantalla_principal():
                                 supabase.table("prestamos").update({"estado": "Pagado"}).eq("id", p['id']).execute()
                                 st.rerun()
 
-    # --- PESTAÑA 4: CIERRE ANUAL (FILTRADO POR ACTIVOS) ---
+    # --- PESTAÑA 4: CIERRE ANUAL ---
     with tabs[4]:
         st.subheader("Cierre Contable y Distribución de Dividendos")
         
@@ -195,28 +202,23 @@ def pantalla_principal():
         if len(resp_ciclo.data) > 0:
             id_ciclo_actual = resp_ciclo.data[0]['id']
             
-            # --- CORRECCIÓN MATEMÁTICA: IDENTIFICAR ACTIVOS ---
-            # 1. Buscamos primero a los usuarios que SÍ están activos
             usuarios_activos = supabase.table("usuarios").select("id").eq("activo", True).execute()
             ids_activos = [u['id'] for u in usuarios_activos.data]
             
-            # 2. Las ganancias globales (Rifas, Intereses) se suman completas porque son del fondo
             tx_rendimientos = supabase.table("transacciones").select("monto").in_("tipo", ["Interes_Prestamo", "Actividad_Externa"]).eq("estado", "Aprobado").execute()
             rendimientos_totales = sum(tx["monto"] for tx in tx_rendimientos.data)
             
-            # 3. Sumar CUPOS solo de usuarios activos
             todos_cupos = supabase.table("cupos_miembros").select("cantidad_cupos, id_usuario").eq("id_ciclo", id_ciclo_actual).execute()
             total_cupos_vendidos = sum(c["cantidad_cupos"] for c in todos_cupos.data if c["id_usuario"] in ids_activos)
             
             rendimiento_por_cupo = (rendimientos_totales / total_cupos_vendidos) if total_cupos_vendidos > 0 else 0
 
             # ==================================================================
-            # VISIÓN GERENCIAL (Exclusivo para Administrador y Tesorero)
+            # VISIÓN GERENCIAL
             # ==================================================================
             if es_tesorero_admin:
                 st.markdown("### 🌐 Panel de Control Global (Consolidado Familiar)")
                 
-                # Sumar APORTES globales solo de usuarios activos
                 tx_aportes_global = supabase.table("transacciones").select("monto, id_usuario").eq("tipo", "Aporte").eq("estado", "Aprobado").execute()
                 aportes_totales = sum(tx["monto"] for tx in tx_aportes_global.data if tx["id_usuario"] in ids_activos)
                 
@@ -228,7 +230,6 @@ def pantalla_principal():
                 
                 st.markdown("#### 👥 Libro Mayor de Liquidación por Ahorrador")
                 
-                # Para la tabla mostramos exclusivamente a los que están activos (.eq("activo", True))
                 all_users = supabase.table("usuarios").select("id, nombre").eq("activo", True).execute()
                 all_aportes = supabase.table("transacciones").select("id_usuario, monto").eq("tipo", "Aporte").eq("estado", "Aprobado").execute()
                 all_cupos = supabase.table("cupos_miembros").select("id_usuario, cantidad_cupos").eq("id_ciclo", id_ciclo_actual).execute()
@@ -267,7 +268,7 @@ def pantalla_principal():
                 st.markdown("### 👤 Mi Cierre Personal")
 
             # ==================================================================
-            # VISIÓN CLIENTE (Cierre personal del usuario en sesión)
+            # VISIÓN CLIENTE
             # ==================================================================
             mis_tx = supabase.table("transacciones").select("monto").eq("id_usuario", usuario['id']).eq("tipo", "Aporte").eq("estado", "Aprobado").execute()
             mi_ahorro_real = sum(tx["monto"] for tx in mis_tx.data)
@@ -373,10 +374,31 @@ def pantalla_principal():
                             st.rerun()
         idx_p += 1
 
-    # --- PANEL ASIGNACIÓN DE CUPOS ---
+    # --- PANEL PARAMETRIZACIONES Y CUPOS ---
     if es_tesorero_admin:
         with tabs[idx_p]:
-            st.subheader("⚙️ Configuración de Cupos por Vigencia")
+            st.subheader("⚙️ Panel de Parámetros y Cupos")
+            
+            # NUEVO: Sub-panel de parametrización del ciclo fiscal
+            st.markdown("### 📅 Configuración del Año Fiscal")
+            resp_ciclo_edit = supabase.table("configuracion_ciclo").select("*").eq("anio", 2026).execute()
+            if len(resp_ciclo_edit.data) > 0:
+                ciclo_edit = resp_ciclo_edit.data[0]
+                tasa_actual_db = ciclo_edit.get("tasa_interes_prestamo", 3.0)
+                
+                col_t1, col_t2 = st.columns(2)
+                with col_t1:
+                    nueva_tasa = st.number_input("Fijar Tasa de Préstamos (%)", min_value=0.0, max_value=15.0, value=float(tasa_actual_db), step=0.1, key="config_tasa")
+                    if st.button("Actualizar Tasa Vigente", key="btn_actualizar_tasa"):
+                        supabase.table("configuracion_ciclo").update({"tasa_interes_prestamo": nueva_tasa}).eq("id", ciclo_edit['id']).execute()
+                        st.success(f"Tasa actualizada al {nueva_tasa}% para el año 2026.")
+                        st.rerun()
+                with col_t2:
+                    st.info(f"**Valor Nominal del Cupo 2026:** ${ciclo_edit['valor_nominal_cupo']:,.0f} COP")
+            else:
+                st.error("No se ha creado la configuración base para el 2026.")
+                
+            st.markdown("---")
             
             lista_us = supabase.table("usuarios").select("id, nombre, correo").eq("activo", True).execute()
             lista_ci = supabase.table("configuracion_ciclo").select("id, anio").execute()

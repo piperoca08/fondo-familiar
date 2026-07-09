@@ -141,11 +141,10 @@ def pantalla_principal():
         else:
             st.info("No registra movimientos históricos.")
 
-    # --- PESTAÑA 3: PRÉSTAMOS (TASA PARAMETRIZADA) ---
+    # --- PESTAÑA 3: PRÉSTAMOS (FLUJO DE APROBACIÓN GERENCIAL) ---
     with tabs[3]:
         st.subheader("🤝 Módulo de Colocación de Créditos")
         
-        # Consultamos la tasa vigente configurada por el administrador
         resp_ciclo_p = supabase.table("configuracion_ciclo").select("tasa_interes_prestamo").eq("anio", 2026).execute()
         tasa_vigente = resp_ciclo_p.data[0].get("tasa_interes_prestamo", 3.0) if len(resp_ciclo_p.data) > 0 else 3.0
 
@@ -154,14 +153,12 @@ def pantalla_principal():
         with col_sol:
             st.markdown("### Crear Solicitud")
             monto_p = st.number_input("Capital Solicitado (COP)", min_value=0, step=50000, key="prestamo_monto")
-            # Reemplazamos el input por un mensaje informativo estricto
-            st.info(f"ℹ️ **Tasa de interés vigente:** {tasa_vigente}% mensual (Fijada por la administración)")
-            fecha_lim = st.date_input("Fecha de Vencimiento", key="prestamo_fecha")
+            st.info(f"ℹ️ **Tasa de interés vigente:** {tasa_vigente}% mensual\n\n*La fecha de pago será asignada por el comité de aprobación.*")
             
             if st.button("Radicar Solicitud", key="btn_radicar_prestamo"):
                 if monto_p > 0:
-                    # Insertamos la tasa_vigente que trajimos de la base de datos
-                    data_prestamo = {"id_usuario": usuario['id'], "monto_solicitado": monto_p, "tasa_interes": tasa_vigente, "estado": "Solicitado", "fecha_limite": str(fecha_lim)}
+                    # Se inserta sin fecha_limite. Se calculará cuando se apruebe.
+                    data_prestamo = {"id_usuario": usuario['id'], "monto_solicitado": monto_p, "tasa_interes": tasa_vigente, "estado": "Solicitado"}
                     supabase.table("prestamos").insert(data_prestamo).execute()
                     st.success("✅ Crédito radicado bajo las políticas vigentes.")
                     st.rerun()
@@ -172,7 +169,16 @@ def pantalla_principal():
             st.markdown("### Tus Obligaciones")
             mis_p = supabase.table("prestamos").select("*").eq("id_usuario", usuario['id']).order("id", desc=True).execute()
             if len(mis_p.data) > 0:
-                st.dataframe(mis_p.data, use_container_width=True, column_config={"id_usuario": None})
+                # Mejoramos la tabla para el solicitante
+                datos_mis_p = []
+                for prestamo in mis_p.data:
+                    datos_mis_p.append({
+                        "Monto (COP)": prestamo["monto_solicitado"],
+                        "Tasa (%)": prestamo["tasa_interes"],
+                        "Estado": prestamo["estado"],
+                        "Vencimiento": prestamo["fecha_limite"] if prestamo.get("fecha_limite") else "⏳ Por definir por comité"
+                    })
+                st.dataframe(datos_mis_p, use_container_width=True)
             else:
                 st.info("No registra pasivos vigentes.")
                 
@@ -183,20 +189,25 @@ def pantalla_principal():
                 if len(p_pendientes.data) > 0:
                     for p in p_pendientes.data:
                         nombre_solicitante = p['usuarios']['nombre'] if 'usuarios' in p else "Miembro"
-                        with st.expander(f"Crédito ID {p['id']} - {nombre_solicitante} (${p['monto_solicitado']:,.0f})"):
-                            st.write(f"Vencimiento: {p['fecha_limite']} | Tasa aplicada: {p['tasa_interes']}%")
+                        with st.expander(f"Crédito Solicitado - {nombre_solicitante} (${p['monto_solicitado']:,.0f})"):
+                            st.write(f"Tasa que aplicará: {p['tasa_interes']}%")
+                            
+                            # EL REVISOR FIJA LA FECHA AQUÍ
+                            fecha_asignada = st.date_input("📅 Asignar Fecha de Vencimiento", key=f"fecha_ap_{p['id']}")
+                            
                             cA, cB = st.columns(2)
-                            if cA.button("✅ Conceder", key=f"ap_p_{p['id']}"):
-                                supabase.table("prestamos").update({"estado": "Activo"}).eq("id", p['id']).execute()
+                            if cA.button("✅ Conceder y Fijar Fecha", key=f"ap_p_{p['id']}"):
+                                supabase.table("prestamos").update({"estado": "Activo", "fecha_limite": str(fecha_asignada)}).eq("id", p['id']).execute()
                                 st.rerun()
                             if cB.button("❌ Denegar", key=f"re_p_{p['id']}"):
                                 supabase.table("prestamos").update({"estado": "Pagado"}).eq("id", p['id']).execute()
                                 st.rerun()
+                else:
+                    st.success("No existen créditos en cola de aprobación.")
 
     # --- PESTAÑA 4: CIERRE ANUAL ---
     with tabs[4]:
         st.subheader("Cierre Contable y Distribución de Dividendos")
-        
         resp_ciclo = supabase.table("configuracion_ciclo").select("id").eq("anio", 2026).execute()
         
         if len(resp_ciclo.data) > 0:
@@ -379,7 +390,6 @@ def pantalla_principal():
         with tabs[idx_p]:
             st.subheader("⚙️ Panel de Parámetros y Cupos")
             
-            # NUEVO: Sub-panel de parametrización del ciclo fiscal
             st.markdown("### 📅 Configuración del Año Fiscal")
             resp_ciclo_edit = supabase.table("configuracion_ciclo").select("*").eq("anio", 2026).execute()
             if len(resp_ciclo_edit.data) > 0:

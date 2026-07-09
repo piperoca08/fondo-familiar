@@ -186,22 +186,27 @@ def pantalla_principal():
                                 supabase.table("prestamos").update({"estado": "Pagado"}).eq("id", p['id']).execute()
                                 st.rerun()
 
-    # --- PESTAÑA 4: CIERRE ANUAL (VISIÓN GERENCIAL Y PERSONAL) ---
+    # --- PESTAÑA 4: CIERRE ANUAL (FILTRADO POR ACTIVOS) ---
     with tabs[4]:
         st.subheader("Cierre Contable y Distribución de Dividendos")
         
-        # Leemos el ciclo actual (2026)
         resp_ciclo = supabase.table("configuracion_ciclo").select("id").eq("anio", 2026).execute()
         
         if len(resp_ciclo.data) > 0:
             id_ciclo_actual = resp_ciclo.data[0]['id']
             
-            # 1. MATEMÁTICA BASE: GANANCIAS GLOBALES (Rendimientos a repartir)
+            # --- CORRECCIÓN MATEMÁTICA: IDENTIFICAR ACTIVOS ---
+            # 1. Buscamos primero a los usuarios que SÍ están activos
+            usuarios_activos = supabase.table("usuarios").select("id").eq("activo", True).execute()
+            ids_activos = [u['id'] for u in usuarios_activos.data]
+            
+            # 2. Las ganancias globales (Rifas, Intereses) se suman completas porque son del fondo
             tx_rendimientos = supabase.table("transacciones").select("monto").in_("tipo", ["Interes_Prestamo", "Actividad_Externa"]).eq("estado", "Aprobado").execute()
             rendimientos_totales = sum(tx["monto"] for tx in tx_rendimientos.data)
             
-            todos_cupos = supabase.table("cupos_miembros").select("cantidad_cupos").eq("id_ciclo", id_ciclo_actual).execute()
-            total_cupos_vendidos = sum(c["cantidad_cupos"] for c in todos_cupos.data)
+            # 3. Sumar CUPOS solo de usuarios activos
+            todos_cupos = supabase.table("cupos_miembros").select("cantidad_cupos, id_usuario").eq("id_ciclo", id_ciclo_actual).execute()
+            total_cupos_vendidos = sum(c["cantidad_cupos"] for c in todos_cupos.data if c["id_usuario"] in ids_activos)
             
             rendimiento_por_cupo = (rendimientos_totales / total_cupos_vendidos) if total_cupos_vendidos > 0 else 0
 
@@ -211,20 +216,19 @@ def pantalla_principal():
             if es_tesorero_admin:
                 st.markdown("### 🌐 Panel de Control Global (Consolidado Familiar)")
                 
-                # Aportes totales puros de todo el fondo
-                tx_aportes_global = supabase.table("transacciones").select("monto").eq("tipo", "Aporte").eq("estado", "Aprobado").execute()
-                aportes_totales = sum(tx["monto"] for tx in tx_aportes_global.data)
+                # Sumar APORTES globales solo de usuarios activos
+                tx_aportes_global = supabase.table("transacciones").select("monto, id_usuario").eq("tipo", "Aporte").eq("estado", "Aprobado").execute()
+                aportes_totales = sum(tx["monto"] for tx in tx_aportes_global.data if tx["id_usuario"] in ids_activos)
                 
-                # Tarjetas de métricas globales
                 colG1, colG2, colG3, colG4 = st.columns(4)
                 colG1.metric("Caja Aportes Reales", f"${aportes_totales:,.0f}")
                 colG2.metric("Utilidades (Rendimientos)", f"${rendimientos_totales:,.0f}")
                 colG3.metric("Gran Total Consolidado", f"${(aportes_totales + rendimientos_totales):,.0f}")
-                colG4.metric("Cupos Vendidos", f"{total_cupos_vendidos}")
+                colG4.metric("Cupos Vendidos Activos", f"{total_cupos_vendidos}")
                 
                 st.markdown("#### 👥 Libro Mayor de Liquidación por Ahorrador")
                 
-                # Extraemos y cruzamos los datos de todos los usuarios
+                # Para la tabla mostramos exclusivamente a los que están activos (.eq("activo", True))
                 all_users = supabase.table("usuarios").select("id, nombre").eq("activo", True).execute()
                 all_aportes = supabase.table("transacciones").select("id_usuario, monto").eq("tipo", "Aporte").eq("estado", "Aprobado").execute()
                 all_cupos = supabase.table("cupos_miembros").select("id_usuario, cantidad_cupos").eq("id_ciclo", id_ciclo_actual).execute()
@@ -232,11 +236,9 @@ def pantalla_principal():
                 detalle_ahorradores = []
                 for u in all_users.data:
                     u_id = u['id']
-                    # Sumamos los aportes y cupos individuales de forma dinámica
                     u_aportes = sum(tx['monto'] for tx in all_aportes.data if tx['id_usuario'] == u_id)
                     u_cupos = sum(c['cantidad_cupos'] for c in all_cupos.data if c['id_usuario'] == u_id)
                     
-                    # Solo mostramos al usuario si tiene dinero o cupos activos
                     if u_cupos > 0 or u_aportes > 0:
                         u_ganancias = u_cupos * rendimiento_por_cupo
                         u_liquidacion = u_aportes + u_ganancias
@@ -249,7 +251,6 @@ def pantalla_principal():
                         })
                 
                 if len(detalle_ahorradores) > 0:
-                    # Dibujamos la tabla con formato de moneda
                     st.dataframe(
                         detalle_ahorradores, 
                         use_container_width=True,
@@ -266,7 +267,7 @@ def pantalla_principal():
                 st.markdown("### 👤 Mi Cierre Personal")
 
             # ==================================================================
-            # VISIÓN CLIENTE (Lo que ve cada Ahorrador para su propia cuenta)
+            # VISIÓN CLIENTE (Cierre personal del usuario en sesión)
             # ==================================================================
             mis_tx = supabase.table("transacciones").select("monto").eq("id_usuario", usuario['id']).eq("tipo", "Aporte").eq("estado", "Aprobado").execute()
             mi_ahorro_real = sum(tx["monto"] for tx in mis_tx.data)
@@ -284,16 +285,14 @@ def pantalla_principal():
             colY.metric("Tus Ganancias (Intereses/Rifas)", f"${mis_ganancias:,.0f}")
             colZ.metric("Rendimiento por 1 Cupo", f"${rendimiento_por_cupo:,.0f}")
             
-            # El desglose global solo se lo mostramos al ahorrador común, 
-            # ya que el Administrador/Tesorero ya tiene el gran panel gerencial arriba.
             if not es_tesorero_admin:
-                with st.expander("📊 Ver desglose global del fondo (Auditoría)"):
+                with st.expander("📊 Ver desglose global del fondo"):
                     st.write(f"**Utilidades totales del fondo a repartir:** ${rendimientos_totales:,.0f}")
-                    st.write(f"**Total de cupos suscritos en la familia:** {total_cupos_vendidos}")
-                    st.markdown("*Nota de negocio: El capital base no se prorratea. Recibes exactamente lo aportado de tu bolsillo, sumando las utilidades proporcionales a los cupos que contrataste.*")
+                    st.write(f"**Total de cupos suscritos (Activos):** {total_cupos_vendidos}")
+                    st.markdown("*Nota: El capital base no se prorratea. Recibes exactamente lo aportado, sumando las utilidades proporcionales a tus cupos.*")
         else:
             st.error("Configuración de ciclo no encontrada.")
-            
+
     # ==========================================================================
     # PESTAÑAS ADMINISTRATIVAS CONDICIONALES
     # ==========================================================================
@@ -411,12 +410,10 @@ def pantalla_principal():
                 
                 with col_c2:
                     st.markdown("### Directorio Actual")
-                    # CAMBIO APLICADO AQUÍ: Traemos el campo activo del usuario
                     cupos_actuales = supabase.table("cupos_miembros").select("cantidad_cupos, usuarios(nombre, activo), configuracion_ciclo(anio)").execute()
                     
                     if len(cupos_actuales.data) > 0:
                         datos_tabla = []
-                        # Filtramos por Python: Solo mostramos los usuarios que siguen activos
                         for c in cupos_actuales.data:
                             if c['usuarios'] is not None and c['usuarios'].get('activo', True):
                                 datos_tabla.append({

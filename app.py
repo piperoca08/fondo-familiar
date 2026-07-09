@@ -265,7 +265,6 @@ def pantalla_principal():
             
             lista_us_bloqueo = supabase.table("usuarios").select("id, nombre, correo, activo").order("id", desc=False).execute()
             if len(lista_us_bloqueo.data) > 0:
-                # AQUÍ ESTÁ EL CAMBIO: Ahora el diccionario muestra Nombre | Correo
                 dicc_estado = {f"{u['nombre']} | {u['correo']} - {'🟢 Activo' if u.get('activo', True) else '🔴 Bloqueado'}": u for u in lista_us_bloqueo.data}
                 
                 col_b1, col_b2 = st.columns([1, 1])
@@ -291,24 +290,23 @@ def pantalla_principal():
                             st.rerun()
         idx_p += 1
 
-    # --- PANEL ASIGNACIÓN DE CUPOS (CON CORREO VISIBLE) ---
+    # --- PANEL ASIGNACIÓN DE CUPOS (FILTRANDO USUARIOS ACTIVOS) ---
     if es_tesorero_admin:
         with tabs[idx_p]:
             st.subheader("⚙️ Configuración de Cupos por Vigencia")
             
-            # AQUÍ ESTÁ EL CAMBIO: Seleccionamos el correo de la base de datos
-            lista_us = supabase.table("usuarios").select("id, nombre, correo").execute()
+            # AQUÍ ESTÁ EL CAMBIO: Filtramos por .eq("activo", True)
+            lista_us = supabase.table("usuarios").select("id, nombre, correo").eq("activo", True).execute()
             lista_ci = supabase.table("configuracion_ciclo").select("id, anio").execute()
             
             if len(lista_us.data) > 0 and len(lista_ci.data) > 0:
-                # AQUÍ ESTÁ EL CAMBIO: Mostramos Nombre | Correo en el menú desplegable
                 dicc_usuarios = {f"{u['nombre']} | {u['correo']}": u['id'] for u in lista_us.data}
                 dicc_ciclos = {str(c['anio']): c['id'] for c in lista_ci.data}
                 
                 col_c1, col_c2 = st.columns([1, 1.5])
                 with col_c1:
                     st.markdown("### Asignar Compromiso")
-                    sel_user_name = st.selectbox("Seleccionar Usuario", list(dicc_usuarios.keys()), key="cupo_usuario")
+                    sel_user_name = st.selectbox("Seleccionar Usuario Activo", list(dicc_usuarios.keys()), key="cupo_usuario")
                     sel_ciclo_name = st.selectbox("Vigencia (Año)", list(dicc_ciclos.keys()), key="cupo_ciclo")
                     cant_cupos = st.number_input("Cantidad de Cupos Mensuales", min_value=1, step=1, key="cupo_cantidad")
                     

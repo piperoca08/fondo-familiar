@@ -19,7 +19,7 @@ if 'usuario_actual' not in st.session_state:
     st.session_state['usuario_actual'] = None
 
 # ==============================================================================
-# 2. CAPA DE AUTENTICACIÓN
+# 2. CAPA DE AUTENTICACIÓN (CON VERIFICACIÓN DE BLOQUEO)
 # ==============================================================================
 def pantalla_autenticacion():
     st.title("🔐 Acceso al Sistema - Fondo Familiar")
@@ -35,9 +35,13 @@ def pantalla_autenticacion():
             if len(respuesta.data) > 0:
                 usuario_db = respuesta.data[0]
                 if usuario_db['contrasena_cifrada'] == contrasena:
-                    st.session_state['usuario_actual'] = usuario_db
-                    st.success(f"Ingreso autorizado para {usuario_db['nombre']}.")
-                    st.rerun()
+                    # REGLA DE NEGOCIO: Verificar si el usuario está bloqueado
+                    if usuario_db.get('activo', True) == True:
+                        st.session_state['usuario_actual'] = usuario_db
+                        st.success(f"Ingreso autorizado para {usuario_db['nombre']}.")
+                        st.rerun()
+                    else:
+                        st.error("🔒 Acceso denegado. Esta cuenta ha sido suspendida/bloqueada.")
                 else:
                     st.error("Contraseña incorrecta. Verifique sus datos.")
             else:
@@ -244,12 +248,13 @@ def pantalla_principal():
                 st.success("No se registran transacciones pendientes.")
         idx_p += 1
 
-    # --- PANEL GESTIÓN USUARIOS ---
+    # --- PANEL GESTIÓN USUARIOS (CON BLOQUEO DE CUENTAS) ---
     if es_admin:
         with tabs[idx_p]:
             st.subheader("👤 Registro Central de Miembros")
             col_u1, col_u2 = st.columns(2)
             with col_u1:
+                st.markdown("### Nuevo Usuario")
                 u_nombre = st.text_input("Nombre Completo", key="reg_nombre")
                 u_correo = st.text_input("Correo electrónico", key="reg_correo").strip().lower()
                 u_pass = st.text_input("Contraseña", type="password", key="reg_pass")
@@ -265,17 +270,52 @@ def pantalla_principal():
                             st.error(f"Error: {error_u}")
                     else:
                         st.error("Campos obligatorios.")
+            
             with col_u2:
-                lista_usuarios = supabase.table("usuarios").select("id, nombre, correo, rol").order("id", desc=False).execute()
+                st.markdown("### Directorio Actual")
+                # Incluimos la columna 'activo' para ver quién está bloqueado
+                lista_usuarios = supabase.table("usuarios").select("id, nombre, correo, rol, activo").order("id", desc=False).execute()
                 if len(lista_usuarios.data) > 0:
                     st.dataframe(lista_usuarios.data, use_container_width=True)
+
+            st.markdown("---")
+            st.markdown("### 🔒 Suspender / Activar Acceso de Usuarios")
+            st.write("Bloquea a un usuario para impedir su inicio de sesión sin perder su historial.")
+            
+            lista_us_bloqueo = supabase.table("usuarios").select("id, nombre, correo, activo").order("id", desc=False).execute()
+            if len(lista_us_bloqueo.data) > 0:
+                # Diccionario que muestra el estado visualmente
+                dicc_estado = {f"{u['nombre']} - {'🟢 Activo' if u.get('activo', True) else '🔴 Bloqueado'}": u for u in lista_us_bloqueo.data}
+                
+                col_b1, col_b2 = st.columns([1, 1])
+                with col_b1:
+                    sel_usuario_bloqueo = st.selectbox("Seleccionar Miembro", list(dicc_estado.keys()), key="sel_usuario_bloqueo")
+                
+                with col_b2:
+                    st.write("") 
+                    st.write("")
+                    user_target = dicc_estado[sel_usuario_bloqueo]
+                    estado_actual = user_target.get('activo', True)
+                    
+                    if estado_actual:
+                        if st.button("🔴 Bloquear Acceso", key="btn_bloquear"):
+                            # Si es el admin tratando de bloquearse a sí mismo, se lo impedimos por seguridad
+                            if user_target['id'] == usuario['id']:
+                                st.error("No puedes bloquear tu propia cuenta de Administrador.")
+                            else:
+                                supabase.table("usuarios").update({"activo": False}).eq("id", user_target['id']).execute()
+                                st.rerun()
+                    else:
+                        if st.button("🟢 Desbloquear Acceso", key="btn_desbloquear"):
+                            supabase.table("usuarios").update({"activo": True}).eq("id", user_target['id']).execute()
+                            st.rerun()
+                            
         idx_p += 1
 
     # --- PANEL ASIGNACIÓN DE CUPOS ---
     if es_tesorero_admin:
         with tabs[idx_p]:
             st.subheader("⚙️ Configuración de Cupos por Vigencia")
-            st.write("Asigna o modifica la cantidad de cupos comprometidos por cada miembro según el año fiscal.")
             
             lista_us = supabase.table("usuarios").select("id, nombre, rol").execute()
             lista_ci = supabase.table("configuracion_ciclo").select("id, anio").execute()
@@ -291,19 +331,18 @@ def pantalla_principal():
                     sel_ciclo_name = st.selectbox("Vigencia (Año)", list(dicc_ciclos.keys()), key="cupo_ciclo")
                     cant_cupos = st.number_input("Cantidad de Cupos Mensuales", min_value=1, step=1, key="cupo_cantidad")
                     
-                    if st.button("Guardar Asignación de Cupos", key="btn_guardar_cupos"):
+                    if st.button("Guardar Asignación", key="btn_guardar_cupos"):
                         id_u = dicc_usuarios[sel_user_name]
                         id_c = dicc_ciclos[sel_ciclo_name]
                         existe = supabase.table("cupos_miembros").select("id").eq("id_usuario", id_u).eq("id_ciclo", id_c).execute()
                         
                         try:
                             if len(existe.data) > 0:
-                                id_registro = existe.data[0]['id']
-                                supabase.table("cupos_miembros").update({"cantidad_cupos": cant_cupos}).eq("id", id_registro).execute()
-                                st.success("Cupos actualizados correctamente.")
+                                supabase.table("cupos_miembros").update({"cantidad_cupos": cant_cupos}).eq("id", existe.data[0]['id']).execute()
+                                st.success("Cupos actualizados.")
                             else:
                                 supabase.table("cupos_miembros").insert({"id_usuario": id_u, "id_ciclo": id_c, "cantidad_cupos": cant_cupos}).execute()
-                                st.success("Contrato creado correctamente.")
+                                st.success("Contrato creado.")
                             st.rerun()
                         except Exception as e:
                             st.error(f"Error: {e}")
@@ -312,7 +351,7 @@ def pantalla_principal():
                     st.markdown("### Directorio Actual")
                     cupos_actuales = supabase.table("cupos_miembros").select("cantidad_cupos, usuarios(nombre), configuracion_ciclo(anio)").execute()
                     if len(cupos_actuales.data) > 0:
-                        datos_tabla = [{"Usuario": c['usuarios']['nombre'], "Año Vigencia": c['configuracion_ciclo']['anio'], "Cupos Contratados": c['cantidad_cupos']} for c in cupos_actuales.data]
+                        datos_tabla = [{"Usuario": c['usuarios']['nombre'], "Año Vigencia": c['configuracion_ciclo']['anio'], "Cupos": c['cantidad_cupos']} for c in cupos_actuales.data]
                         st.dataframe(datos_tabla, use_container_width=True)
                     else:
                         st.info("Aún no hay cupos asignados.")

@@ -108,29 +108,63 @@ def pantalla_principal():
         else:
             st.error("El año fiscal 2026 no ha sido configurado.")
 
-    # --- PESTAÑA 1: REGISTRAR PAGO ---
+    # --- PESTAÑA 1: REGISTRAR PAGO (FLUJO OPTIMIZADO) ---
     with tabs[1]:
-        st.subheader("Subir comprobante de pago")
-        meses = {"Enero": 1, "Febrero": 2, "Marzo": 3, "Abril": 4, "Mayo": 5, "Junio": 6, "Julio": 7, "Agosto": 8, "Septiembre": 9, "Octubre": 10, "Noviembre": 11, "Diciembre": 12}
-        nombre_mes = st.selectbox("Mes de cobertura contable", list(meses.keys()), key="pago_mes")
-        monto = st.number_input("Monto total transferido (COP)", min_value=0, step=10000, key="pago_monto")
-        tipo = st.selectbox("Clasificación", ["Aporte", "Interes_Prestamo", "Actividad_Externa"], key="pago_tipo")
-        archivo = st.file_uploader("Adjuntar Recibo (PNG, JPG, PDF)", type=['png', 'jpg', 'jpeg', 'pdf'], key="pago_archivo")
+        st.subheader("Registrar nuevo movimiento contable")
         
-        if st.button("Enviar Transacción a Revisión", key="btn_enviar_pago"):
-            if monto > 0 and archivo is not None:
-                nombre_archivo_unico = f"usuario_{usuario['id']}_{datetime.datetime.now().timestamp()}_{archivo.name}"
-                try:
-                    supabase.storage.from_("comprobantes").upload(path=nombre_archivo_unico, file=archivo.getvalue(), file_options={"content-type": archivo.type})
-                    url_publica = supabase.storage.from_("comprobantes").get_public_url(nombre_archivo_unico)
-                    nuevo_pago = {"id_usuario": usuario['id'], "mes_correspondiente": meses[nombre_mes], "tipo": tipo, "monto": monto, "estado": "Pendiente", "url_comprobante": url_publica}
-                    supabase.table("transacciones").insert(nuevo_pago).execute()
-                    st.success("✅ Transacción grabada y archivo alojado.")
-                    st.balloons()
-                except Exception as e:
-                    st.error(f"Fallo crítico en la carga: {e}")
-            else:
-                st.warning("⚠️ Formulario incompleto.")
+        # 1. Primero seleccionamos qué tipo de pago es
+        tipo = st.selectbox("Clasificación del Movimiento", ["Aporte", "Interes_Prestamo", "Actividad_Externa"], key="pago_tipo")
+        
+        meses = {"Enero": 1, "Febrero": 2, "Marzo": 3, "Abril": 4, "Mayo": 5, "Junio": 6, "Julio": 7, "Agosto": 8, "Septiembre": 9, "Octubre": 10, "Noviembre": 11, "Diciembre": 12}
+        
+        # 2. Lógica dinámica: Filtramos los meses SÓLO si es un Aporte
+        if tipo == "Aporte":
+            tx_previas = supabase.table("transacciones").select("mes_correspondiente").eq("id_usuario", usuario['id']).eq("tipo", "Aporte").in_("estado", ["Pendiente", "Aprobado"]).execute()
+            meses_pagados = [tx['mes_correspondiente'] for tx in tx_previas.data]
+            meses_disponibles = {k: v for k, v in meses.items() if v not in meses_pagados}
+        else:
+            meses_disponibles = meses # Para préstamos u otras cosas, mostramos todos los meses
+            
+        if not meses_disponibles and tipo == "Aporte":
+            st.success("🎉 ¡Felicidades! Ya tienes todos tus aportes del año registrados (aprobados o en revisión).")
+        else:
+            # 3. Mostrar el formulario con los meses restantes
+            nombre_mes = st.selectbox("Mes de cobertura contable", list(meses_disponibles.keys()), key="pago_mes")
+            monto = st.number_input("Monto total (COP)", min_value=0, step=10000, key="pago_monto")
+            
+            # 4. Archivo ahora es Opcional
+            archivo = st.file_uploader("Adjuntar Recibo (Opcional - PNG, JPG, PDF)", type=['png', 'jpg', 'jpeg', 'pdf'], key="pago_archivo")
+            
+            if st.button("Enviar Transacción a Revisión", key="btn_enviar_pago"):
+                if monto > 0:
+                    url_publica = None # Por defecto no hay archivo
+                    
+                    if archivo is not None:
+                        nombre_archivo_unico = f"usuario_{usuario['id']}_{datetime.datetime.now().timestamp()}_{archivo.name}"
+                        try:
+                            supabase.storage.from_("comprobantes").upload(path=nombre_archivo_unico, file=archivo.getvalue(), file_options={"content-type": archivo.type})
+                            url_publica = supabase.storage.from_("comprobantes").get_public_url(nombre_archivo_unico)
+                        except Exception as e:
+                            st.error(f"Fallo al subir la imagen, pero se registrará el pago. Error: {e}")
+                    
+                    nuevo_pago = {
+                        "id_usuario": usuario['id'], 
+                        "mes_correspondiente": meses_disponibles[nombre_mes], 
+                        "tipo": tipo, 
+                        "monto": monto, 
+                        "estado": "Pendiente", 
+                        "url_comprobante": url_publica
+                    }
+                    
+                    try:
+                        supabase.table("transacciones").insert(nuevo_pago).execute()
+                        st.success("✅ Transacción radicada exitosamente.")
+                        st.balloons()
+                        st.rerun() # Recargamos para que el mes desaparezca al instante de la lista
+                    except Exception as e:
+                        st.error(f"Error en base de datos: {e}")
+                else:
+                    st.warning("⚠️ Debes ingresar un monto mayor a cero.")
 
     # --- PESTAÑA 2: HISTORIAL ---
     with tabs[2]:
@@ -141,7 +175,7 @@ def pantalla_principal():
         else:
             st.info("No registra movimientos históricos.")
 
-    # --- PESTAÑA 3: PRÉSTAMOS (FLUJO DE APROBACIÓN GERENCIAL) ---
+    # --- PESTAÑA 3: PRÉSTAMOS ---
     with tabs[3]:
         st.subheader("🤝 Módulo de Colocación de Créditos")
         
@@ -157,7 +191,6 @@ def pantalla_principal():
             
             if st.button("Radicar Solicitud", key="btn_radicar_prestamo"):
                 if monto_p > 0:
-                    # Se inserta sin fecha_limite. Se calculará cuando se apruebe.
                     data_prestamo = {"id_usuario": usuario['id'], "monto_solicitado": monto_p, "tasa_interes": tasa_vigente, "estado": "Solicitado"}
                     supabase.table("prestamos").insert(data_prestamo).execute()
                     st.success("✅ Crédito radicado bajo las políticas vigentes.")
@@ -169,7 +202,6 @@ def pantalla_principal():
             st.markdown("### Tus Obligaciones")
             mis_p = supabase.table("prestamos").select("*").eq("id_usuario", usuario['id']).order("id", desc=True).execute()
             if len(mis_p.data) > 0:
-                # Mejoramos la tabla para el solicitante
                 datos_mis_p = []
                 for prestamo in mis_p.data:
                     datos_mis_p.append({
@@ -191,8 +223,6 @@ def pantalla_principal():
                         nombre_solicitante = p['usuarios']['nombre'] if 'usuarios' in p else "Miembro"
                         with st.expander(f"Crédito Solicitado - {nombre_solicitante} (${p['monto_solicitado']:,.0f})"):
                             st.write(f"Tasa que aplicará: {p['tasa_interes']}%")
-                            
-                            # EL REVISOR FIJA LA FECHA AQUÍ
                             fecha_asignada = st.date_input("📅 Asignar Fecha de Vencimiento", key=f"fecha_ap_{p['id']}")
                             
                             cA, cB = st.columns(2)
@@ -310,7 +340,7 @@ def pantalla_principal():
     # ==========================================================================
     idx_p = 5
     
-    # --- PANEL REVISIÓN ---
+    # --- PANEL REVISIÓN (ACTUALIZADO PARA SOPORTES OPCIONALES) ---
     if es_revisor:
         with tabs[idx_p]:
             st.subheader("Auditoría de Pagos Pendientes")
@@ -318,7 +348,13 @@ def pantalla_principal():
             if len(pagos_pendientes.data) > 0:
                 for tx in pagos_pendientes.data:
                     with st.expander(f"Transacción ID {tx['id']} - Monto: ${tx['monto']} - Mes: {tx['mes_correspondiente']}"):
-                        st.markdown(f"**Soporte:** [Abrir Comprobante]({tx['url_comprobante']})")
+                        
+                        # Validamos si existe URL del comprobante
+                        if tx.get('url_comprobante'):
+                            st.markdown(f"**Soporte:** [Abrir Comprobante Original]({tx['url_comprobante']})")
+                        else:
+                            st.markdown("**Soporte:** 📄 *Sin soporte adjunto (Pago verificado en cuenta/efectivo)*")
+                            
                         colA, colB = st.columns(2)
                         if colA.button("✅ Aprobar", key=f"ap_{tx['id']}"):
                             supabase.table("transacciones").update({"estado": "Aprobado", "id_revisor": usuario['id']}).eq("id", tx['id']).execute()
@@ -326,6 +362,8 @@ def pantalla_principal():
                         if colB.button("❌ Rechazar", key=f"re_{tx['id']}"):
                             supabase.table("transacciones").update({"estado": "Rechazado", "id_revisor": usuario['id']}).eq("id", tx['id']).execute()
                             st.rerun()
+            else:
+                st.success("No se registran transacciones pendientes.")
         idx_p += 1
 
     # --- PANEL GESTIÓN USUARIOS ---

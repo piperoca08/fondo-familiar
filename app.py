@@ -70,7 +70,7 @@ def pantalla_principal():
     if es_admin:
         nombres_pestanas.append("👤 Gestión Usuarios")
     if es_tesorero_admin:
-        nombres_pestanas.append("⚙️ Parámetros Globales")
+        nombres_pestanas.append("⚙️ Panel de Parámetros")
         
     tabs = st.tabs(nombres_pestanas)
     
@@ -108,44 +108,36 @@ def pantalla_principal():
         else:
             st.error("El año fiscal 2026 no ha sido configurado.")
 
-    # --- PESTAÑA 1: REGISTRAR PAGO (FLUJO OPTIMIZADO) ---
+    # --- PESTAÑA 1: REGISTRAR PAGO ---
     with tabs[1]:
         st.subheader("Registrar nuevo movimiento contable")
-        
-        # 1. Primero seleccionamos qué tipo de pago es
         tipo = st.selectbox("Clasificación del Movimiento", ["Aporte", "Interes_Prestamo", "Actividad_Externa"], key="pago_tipo")
-        
         meses = {"Enero": 1, "Febrero": 2, "Marzo": 3, "Abril": 4, "Mayo": 5, "Junio": 6, "Julio": 7, "Agosto": 8, "Septiembre": 9, "Octubre": 10, "Noviembre": 11, "Diciembre": 12}
         
-        # 2. Lógica dinámica: Filtramos los meses SÓLO si es un Aporte
         if tipo == "Aporte":
             tx_previas = supabase.table("transacciones").select("mes_correspondiente").eq("id_usuario", usuario['id']).eq("tipo", "Aporte").in_("estado", ["Pendiente", "Aprobado"]).execute()
             meses_pagados = [tx['mes_correspondiente'] for tx in tx_previas.data]
             meses_disponibles = {k: v for k, v in meses.items() if v not in meses_pagados}
         else:
-            meses_disponibles = meses # Para préstamos u otras cosas, mostramos todos los meses
+            meses_disponibles = meses
             
         if not meses_disponibles and tipo == "Aporte":
-            st.success("🎉 ¡Felicidades! Ya tienes todos tus aportes del año registrados (aprobados o en revisión).")
+            st.success("🎉 ¡Felicidades! Ya tienes todos tus aportes del año registrados.")
         else:
-            # 3. Mostrar el formulario con los meses restantes
             nombre_mes = st.selectbox("Mes de cobertura contable", list(meses_disponibles.keys()), key="pago_mes")
             monto = st.number_input("Monto total (COP)", min_value=0, step=10000, key="pago_monto")
-            
-            # 4. Archivo ahora es Opcional
-            archivo = st.file_uploader("Adjuntar Recibo (Opcional - PNG, JPG, PDF)", type=['png', 'jpg', 'jpeg', 'pdf'], key="pago_archivo")
+            archivo = st.file_uploader("Adjuntar Recibo (Opcional)", type=['png', 'jpg', 'jpeg', 'pdf'], key="pago_archivo")
             
             if st.button("Enviar Transacción a Revisión", key="btn_enviar_pago"):
                 if monto > 0:
-                    url_publica = None # Por defecto no hay archivo
-                    
+                    url_publica = None
                     if archivo is not None:
                         nombre_archivo_unico = f"usuario_{usuario['id']}_{datetime.datetime.now().timestamp()}_{archivo.name}"
                         try:
                             supabase.storage.from_("comprobantes").upload(path=nombre_archivo_unico, file=archivo.getvalue(), file_options={"content-type": archivo.type})
                             url_publica = supabase.storage.from_("comprobantes").get_public_url(nombre_archivo_unico)
                         except Exception as e:
-                            st.error(f"Fallo al subir la imagen, pero se registrará el pago. Error: {e}")
+                            st.error(f"Fallo al subir archivo: {e}")
                     
                     nuevo_pago = {
                         "id_usuario": usuario['id'], 
@@ -159,8 +151,7 @@ def pantalla_principal():
                     try:
                         supabase.table("transacciones").insert(nuevo_pago).execute()
                         st.success("✅ Transacción radicada exitosamente.")
-                        st.balloons()
-                        st.rerun() # Recargamos para que el mes desaparezca al instante de la lista
+                        st.rerun()
                     except Exception as e:
                         st.error(f"Error en base de datos: {e}")
                 else:
@@ -178,12 +169,10 @@ def pantalla_principal():
     # --- PESTAÑA 3: PRÉSTAMOS ---
     with tabs[3]:
         st.subheader("🤝 Módulo de Colocación de Créditos")
-        
         resp_ciclo_p = supabase.table("configuracion_ciclo").select("tasa_interes_prestamo").eq("anio", 2026).execute()
         tasa_vigente = resp_ciclo_p.data[0].get("tasa_interes_prestamo", 3.0) if len(resp_ciclo_p.data) > 0 else 3.0
 
         col_sol, col_vis = st.columns([1, 2])
-        
         with col_sol:
             st.markdown("### Crear Solicitud")
             monto_p = st.number_input("Capital Solicitado (COP)", min_value=0, step=50000, key="prestamo_monto")
@@ -242,7 +231,6 @@ def pantalla_principal():
         
         if len(resp_ciclo.data) > 0:
             id_ciclo_actual = resp_ciclo.data[0]['id']
-            
             usuarios_activos = supabase.table("usuarios").select("id").eq("activo", True).execute()
             ids_activos = [u['id'] for u in usuarios_activos.data]
             
@@ -251,15 +239,10 @@ def pantalla_principal():
             
             todos_cupos = supabase.table("cupos_miembros").select("cantidad_cupos, id_usuario").eq("id_ciclo", id_ciclo_actual).execute()
             total_cupos_vendidos = sum(c["cantidad_cupos"] for c in todos_cupos.data if c["id_usuario"] in ids_activos)
-            
             rendimiento_por_cupo = (rendimientos_totales / total_cupos_vendidos) if total_cupos_vendidos > 0 else 0
 
-            # ==================================================================
-            # VISIÓN GERENCIAL
-            # ==================================================================
             if es_tesorero_admin:
                 st.markdown("### 🌐 Panel de Control Global (Consolidado Familiar)")
-                
                 tx_aportes_global = supabase.table("transacciones").select("monto, id_usuario").eq("tipo", "Aporte").eq("estado", "Aprobado").execute()
                 aportes_totales = sum(tx["monto"] for tx in tx_aportes_global.data if tx["id_usuario"] in ids_activos)
                 
@@ -270,7 +253,6 @@ def pantalla_principal():
                 colG4.metric("Cupos Vendidos Activos", f"{total_cupos_vendidos}")
                 
                 st.markdown("#### 👥 Libro Mayor de Liquidación por Ahorrador")
-                
                 all_users = supabase.table("usuarios").select("id, nombre").eq("activo", True).execute()
                 all_aportes = supabase.table("transacciones").select("id_usuario, monto").eq("tipo", "Aporte").eq("estado", "Aprobado").execute()
                 all_cupos = supabase.table("cupos_miembros").select("id_usuario, cantidad_cupos").eq("id_ciclo", id_ciclo_actual).execute()
@@ -304,16 +286,11 @@ def pantalla_principal():
                     )
                 else:
                     st.info("Aún no hay registros financieros para este ciclo.")
-                    
                 st.markdown("---")
                 st.markdown("### 👤 Mi Cierre Personal")
 
-            # ==================================================================
-            # VISIÓN CLIENTE
-            # ==================================================================
             mis_tx = supabase.table("transacciones").select("monto").eq("id_usuario", usuario['id']).eq("tipo", "Aporte").eq("estado", "Aprobado").execute()
             mi_ahorro_real = sum(tx["monto"] for tx in mis_tx.data)
-            
             respuesta_mis_cupos = supabase.table("cupos_miembros").select("cantidad_cupos").eq("id_usuario", usuario['id']).eq("id_ciclo", id_ciclo_actual).execute()
             mis_cupos_liq = respuesta_mis_cupos.data[0]["cantidad_cupos"] if len(respuesta_mis_cupos.data) > 0 else 0
             
@@ -321,17 +298,10 @@ def pantalla_principal():
             mi_liquidacion_total = mi_ahorro_real + mis_ganancias
             
             st.success(f"💰 Tu Liquidación Proyectada: **${mi_liquidacion_total:,.0f} COP**")
-            
             colX, colY, colZ = st.columns(3)
             colX.metric("Tu Ahorro Real (Aportes)", f"${mi_ahorro_real:,.0f}")
             colY.metric("Tus Ganancias (Intereses/Rifas)", f"${mis_ganancias:,.0f}")
             colZ.metric("Rendimiento por 1 Cupo", f"${rendimiento_por_cupo:,.0f}")
-            
-            if not es_tesorero_admin:
-                with st.expander("📊 Ver desglose global del fondo"):
-                    st.write(f"**Utilidades totales del fondo a repartir:** ${rendimientos_totales:,.0f}")
-                    st.write(f"**Total de cupos suscritos (Activos):** {total_cupos_vendidos}")
-                    st.markdown("*Nota: El capital base no se prorratea. Recibes exactamente lo aportado, sumando las utilidades proporcionales a tus cupos.*")
         else:
             st.error("Configuración de ciclo no encontrada.")
 
@@ -340,16 +310,27 @@ def pantalla_principal():
     # ==========================================================================
     idx_p = 5
     
-    # --- PANEL REVISIÓN (ACTUALIZADO PARA SOPORTES OPCIONALES) ---
+    # --- PANEL REVISIÓN (CORREGIDO CON NOMBRE DEL AHORRADOR) ---
     if es_revisor:
         with tabs[idx_p]:
             st.subheader("Auditoría de Pagos Pendientes")
-            pagos_pendientes = supabase.table("transacciones").select("*").eq("estado", "Pendiente").execute()
+            
+            # REGLA DE NEGOCIO: Hacemos un cruce relacional para traer los nombres de los usuarios
+            pagos_pendientes = supabase.table("transacciones").select("*, usuarios(nombre)").eq("estado", "Pendiente").execute()
+            
             if len(pagos_pendientes.data) > 0:
+                # Diccionario de equivalencia visual de meses
+                dicc_meses = {1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio", 7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"}
+                
                 for tx in pagos_pendientes.data:
-                    with st.expander(f"Transacción ID {tx['id']} - Monto: ${tx['monto']} - Mes: {tx['mes_correspondiente']}"):
+                    # Extraemos de forma segura el nombre del ahorrador cruzado
+                    nombre_ahorrador = tx['usuarios']['nombre'] if tx.get('usuarios') else "Miembro Desconocido"
+                    mes_texto = dicc_meses.get(tx['mes_correspondiente'], f"Mes {tx['mes_correspondiente']}")
+                    
+                    # Pintamos el expander con la identificación completa
+                    with st.expander(f"👤 {nombre_ahorrador} | {tx['tipo']} - Cobertura: {mes_texto} (${tx['monto']:,.0f})"):
+                        st.write(f"**ID de Transacción:** {tx['id']}")
                         
-                        # Validamos si existe URL del comprobante
                         if tx.get('url_comprobante'):
                             st.markdown(f"**Soporte:** [Abrir Comprobante Original]({tx['url_comprobante']})")
                         else:
@@ -395,18 +376,14 @@ def pantalla_principal():
 
             st.markdown("---")
             st.markdown("### 🔒 Suspender / Activar Acceso de Usuarios")
-            
             lista_us_bloqueo = supabase.table("usuarios").select("id, nombre, correo, activo").order("id", desc=False).execute()
             if len(lista_us_bloqueo.data) > 0:
                 dicc_estado = {f"{u['nombre']} | {u['correo']} - {'🟢 Activo' if u.get('activo', True) else '🔴 Bloqueado'}": u for u in lista_us_bloqueo.data}
-                
                 col_b1, col_b2 = st.columns([1, 1])
                 with col_b1:
                     sel_usuario_bloqueo = st.selectbox("Seleccionar Miembro", list(dicc_estado.keys()), key="sel_usuario_bloqueo")
-                
                 with col_b2:
-                    st.write("") 
-                    st.write("")
+                    st.write("") ; st.write("")
                     user_target = dicc_estado[sel_usuario_bloqueo]
                     estado_actual = user_target.get('activo', True)
                     
@@ -427,7 +404,6 @@ def pantalla_principal():
     if es_tesorero_admin:
         with tabs[idx_p]:
             st.subheader("⚙️ Panel de Parámetros y Cupos")
-            
             st.markdown("### 📅 Configuración del Año Fiscal")
             resp_ciclo_edit = supabase.table("configuracion_ciclo").select("*").eq("anio", 2026).execute()
             if len(resp_ciclo_edit.data) > 0:
@@ -447,7 +423,6 @@ def pantalla_principal():
                 st.error("No se ha creado la configuración base para el 2026.")
                 
             st.markdown("---")
-            
             lista_us = supabase.table("usuarios").select("id, nombre, correo").eq("activo", True).execute()
             lista_ci = supabase.table("configuracion_ciclo").select("id, anio").execute()
             
@@ -481,7 +456,6 @@ def pantalla_principal():
                 with col_c2:
                     st.markdown("### Directorio Actual")
                     cupos_actuales = supabase.table("cupos_miembros").select("cantidad_cupos, usuarios(nombre, activo), configuracion_ciclo(anio)").execute()
-                    
                     if len(cupos_actuales.data) > 0:
                         datos_tabla = []
                         for c in cupos_actuales.data:
@@ -491,11 +465,10 @@ def pantalla_principal():
                                     "Año Vigencia": c['configuracion_ciclo']['anio'], 
                                     "Cupos": c['cantidad_cupos']
                                 })
-                        
                         if len(datos_tabla) > 0:
                             st.dataframe(datos_tabla, use_container_width=True)
                         else:
-                            st.info("No hay cupos asignados a usuarios activos en este momento.")
+                            st.info("No hay cupos asignados a usuarios activos.")
                     else:
                         st.info("Aún no hay cupos asignados.")
 

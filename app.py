@@ -197,7 +197,7 @@ def pantalla_principal():
                         "Monto (COP)": prestamo["monto_solicitado"],
                         "Tasa (%)": prestamo["tasa_interes"],
                         "Estado": prestamo["estado"],
-                        "Vencimiento": prestamo["fecha_limite"] if prestamo.get("fecha_limite") else "⏳ Por definir por comité"
+                        "Vencimiento": prestamo["fecha_limite"] if prestamo.get("fecha_limite") else "⏳ Por definir"
                     })
                 st.dataframe(datos_mis_p, use_container_width=True)
             else:
@@ -215,7 +215,7 @@ def pantalla_principal():
                             fecha_asignada = st.date_input("📅 Asignar Fecha de Vencimiento", key=f"fecha_ap_{p['id']}")
                             
                             cA, cB = st.columns(2)
-                            if cA.button("✅ Conceder y Fijar Fecha", key=f"ap_p_{p['id']}"):
+                            if cA.button("✅ Conceder", key=f"ap_p_{p['id']}"):
                                 supabase.table("prestamos").update({"estado": "Activo", "fecha_limite": str(fecha_asignada)}).eq("id", p['id']).execute()
                                 st.rerun()
                             if cB.button("❌ Denegar", key=f"re_p_{p['id']}"):
@@ -310,24 +310,26 @@ def pantalla_principal():
     # ==========================================================================
     idx_p = 5
     
-    # --- PANEL REVISIÓN (CORREGIDO CON NOMBRE DEL AHORRADOR) ---
+    # --- PANEL REVISIÓN (CORREGIDO CON DICCIONARIO DE MEMORIA) ---
     if es_revisor:
         with tabs[idx_p]:
             st.subheader("Auditoría de Pagos Pendientes")
             
-            # REGLA DE NEGOCIO: Hacemos un cruce relacional para traer los nombres de los usuarios
-            pagos_pendientes = supabase.table("transacciones").select("*, usuarios(nombre)").eq("estado", "Pendiente").execute()
+            # 1. Traemos las transacciones sin el JOIN de SQL para evitar conflictos
+            pagos_pendientes = supabase.table("transacciones").select("*").eq("estado", "Pendiente").execute()
             
             if len(pagos_pendientes.data) > 0:
-                # Diccionario de equivalencia visual de meses
+                # 2. Traemos todos los usuarios y creamos un diccionario en Python (infalible)
+                usuarios_bd = supabase.table("usuarios").select("id, nombre").execute()
+                dicc_nombres = {u['id']: u['nombre'] for u in usuarios_bd.data}
+                
                 dicc_meses = {1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio", 7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"}
                 
                 for tx in pagos_pendientes.data:
-                    # Extraemos de forma segura el nombre del ahorrador cruzado
-                    nombre_ahorrador = tx['usuarios']['nombre'] if tx.get('usuarios') else "Miembro Desconocido"
+                    # 3. Cruzamos los datos usando el diccionario local
+                    nombre_ahorrador = dicc_nombres.get(tx['id_usuario'], "Miembro Desconocido")
                     mes_texto = dicc_meses.get(tx['mes_correspondiente'], f"Mes {tx['mes_correspondiente']}")
                     
-                    # Pintamos el expander con la identificación completa
                     with st.expander(f"👤 {nombre_ahorrador} | {tx['tipo']} - Cobertura: {mes_texto} (${tx['monto']:,.0f})"):
                         st.write(f"**ID de Transacción:** {tx['id']}")
                         
